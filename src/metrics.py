@@ -1,271 +1,251 @@
-"""
-metrics.py — Métriques d'évaluation pour les deux moteurs NBA.
+"""Student-owned metrics contract.
 
-Moteur 1 (classification W/L) :
-    engine1_log_loss(y_true, y_prob)
-    engine1_roc_auc(y_true, y_prob)
-    engine1_metrics(y_true, y_prob)          → dict
-    engine1_compare_models(results)          → pd.DataFrame classé
-
-Moteur 2 (ranking awards) :
-    engine2_top1_accuracy(y_true, y_prob, groups)
-    engine2_precision_at_k(y_true, y_prob, groups, k=3)
-    engine2_metrics(y_true, y_prob, groups)  → dict
-    engine2_compare_models(results)          → pd.DataFrame classé
+Students must implement ``compute_metrics`` to return the evaluation metrics
+that matter for their project.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
-from sklearn.metrics import log_loss, roc_auc_score
+from sklearn.metrics import (
+    accuracy_score,
+    log_loss,
+    roc_auc_score,
+)
 
 
-# ===========================================================================
-# MOTEUR 1 — Prédiction Victoire / Défaite (classification binaire)
-# ===========================================================================
-# Métriques choisies :
-#   • Log Loss  → pénalise les prédictions confiantes mais fausses ;
-#                 adapté car on veut des probabilités bien calibrées
-#                 (utile pour parier / prendre une décision)
-#   • ROC-AUC   → mesure la capacité à séparer W et L indépendamment
-#                 du seuil de décision ; robuste au déséquilibre de classes
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Contract entry-point (scripts/main.py calls this)
+# ---------------------------------------------------------------------------
 
-def engine1_log_loss(y_true: np.ndarray, y_prob: np.ndarray) -> float:
-    """
-    Log Loss pour le Moteur 1.
-    y_prob : probabilités de victoire (classe 1), shape (n,)
-    Valeur idéale → 0. Baseline (prédire 0.5 partout) ≈ 0.693.
-    """
-    return log_loss(y_true, y_prob)
+def compute_metrics(y_true: Any, y_pred: Any) -> dict[str, float]:
+    """Return the metrics used to compare model performance.
 
+    Expected return value:
+        A dictionary mapping metric names to numeric values, for example:
+        ``{"log_loss": 0.52, "roc_auc": 0.73}``.
 
-def engine1_roc_auc(y_true: np.ndarray, y_prob: np.ndarray) -> float:
-    """
-    ROC-AUC pour le Moteur 1.
-    y_prob : probabilités de victoire (classe 1), shape (n,)
-    Valeur idéale → 1.0. Baseline (aléatoire) = 0.5.
-    """
-    return roc_auc_score(y_true, y_prob)
+    Constraints:
+    - Every value must be numeric and convertible to ``float``.
+    - Use the same metric set for every model so results remain comparable.
+    - Keep metric names stable because they are written to
+      ``results/model_metrics.csv``.
 
-
-def engine1_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
-    """
-    Calcule Log Loss + ROC-AUC en une seule passe.
-
-    Returns
-    -------
-    {
-        "log_loss": float,   # ↓ minimiser
-        "roc_auc":  float,   # ↑ maximiser
-    }
-    """
-    return {
-        "log_loss": engine1_log_loss(y_true, y_prob),
-        "roc_auc":  engine1_roc_auc(y_true, y_prob),
-    }
-
-
-def engine1_compare_models(results: dict[str, dict]) -> pd.DataFrame:
-    """
-    Compare plusieurs modèles Moteur 1 côte à côte.
-
-    Paramètre
-    ---------
-    results : dict
-        Clé = nom du modèle, valeur = dict retourné par engine1_metrics().
-        Ex: {
-            "LogisticRegression": {"log_loss": 0.61, "roc_auc": 0.72},
-            "RandomForest":       {"log_loss": 0.58, "roc_auc": 0.75},
-            "XGBoost":            {"log_loss": 0.55, "roc_auc": 0.78},
-        }
-
-    Returns
-    -------
-    pd.DataFrame trié par ROC-AUC décroissant (meilleur modèle en premier).
-    """
-    df = pd.DataFrame(results).T
-    df.index.name = "model"
-    df = df[["log_loss", "roc_auc"]].astype(float)
-    df = df.sort_values("roc_auc", ascending=False)
-    df["rank"] = range(1, len(df) + 1)
-    return df
-
-
-# ===========================================================================
-# MOTEUR 2 — Prédiction Awards (ranking par saison)
-# ===========================================================================
-# Métriques choisies :
-#   • Top-1 Accuracy  → % de saisons où le joueur prédit #1 est le vrai lauréat
-#                       métrique principale car l'award ne va qu'à une personne
-#   • Precision@3     → parmi les 3 joueurs les mieux classés par le modèle,
-#                       combien sont dans le "vrai top 3" (finalistes réels) ?
-#                       utile car les votes réels sont souvent proches
-#
-# Note : on travaille par groupe (saison) car le ranking est relatif à la
-# cohorte de joueurs de cette saison, pas absolu.
-# ===========================================================================
-
-def engine2_top1_accuracy(
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    groups: np.ndarray,
-) -> float:
-    """
-    Top-1 Accuracy par saison pour le Moteur 2.
-
-    Pour chaque saison, vérifie si le joueur avec la probabilité la plus haute
-    est bien le lauréat (y_true == 1).
-
-    Paramètres
+    Parameters
     ----------
-    y_true  : array binaire (1 = lauréat, 0 = non-lauréat)
-    y_prob  : probabilités estimées d'être lauréat
-    groups  : saison de chaque observation (ex: ['2022-23', '2022-23', ...])
+    y_true:
+        Ground-truth binary labels (0 / 1).  Accepts array-like or
+        ``pandas.Series``.
+    y_pred:
+        Model output.  This function auto-detects its shape:
+
+        * **1-D probabilities** (values in [0, 1]) — used for both
+          ``log_loss`` and ``roc_auc``.
+        * **1-D hard labels** (0 or 1) — only ``accuracy`` is reliable;
+          ``log_loss`` and ``roc_auc`` are set to ``NaN``.
+        * **2-D probability matrix** (shape ``[n, 2]``) — column 1 is
+          taken as the positive-class probability.
 
     Returns
     -------
-    float : proportion de saisons correctement prédites (entre 0 et 1)
+    dict[str, float]
+        Keys: ``"log_loss"``, ``"roc_auc"``, ``"accuracy"``.
     """
-    y_true  = np.asarray(y_true)
-    y_prob  = np.asarray(y_prob)
-    groups  = np.asarray(groups)
+    y_true = np.asarray(y_true).ravel()
+    y_pred = np.asarray(y_pred)
 
-    correct = 0
-    seasons = np.unique(groups)
+    # Resolve 2-D probability matrix to 1-D positive probabilities
+    if y_pred.ndim == 2:
+        if y_pred.shape[1] == 2:
+            y_pred = y_pred[:, 1]
+        else:
+            raise ValueError(
+                f"y_pred has unexpected shape {y_pred.shape}. "
+                "Expected 1-D array or 2-D matrix with 2 columns."
+            )
 
-    for season in seasons:
-        mask        = groups == season
-        top1_idx    = np.argmax(y_prob[mask])
-        correct    += int(y_true[mask][top1_idx] == 1)
+    y_pred = y_pred.ravel()
 
-    return correct / len(seasons)
+    # Detect whether y_pred contains probabilities or hard labels
+    is_proba = not np.all(np.isin(y_pred, [0, 1]))
 
+    if is_proba:
+        # Clip to avoid log(0) edge-cases
+        y_prob   = np.clip(y_pred, 1e-7, 1 - 1e-7)
+        y_labels = (y_prob >= 0.5).astype(int)
+        ll       = float(log_loss(y_true, y_prob))
+        auc      = float(roc_auc_score(y_true, y_prob))
+    else:
+        y_labels = y_pred.astype(int)
+        ll       = float("nan")
+        auc      = float("nan")
 
-def engine2_precision_at_k(
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    groups: np.ndarray,
-    k: int = 3,
-) -> float:
-    """
-    Precision@K moyen par saison pour le Moteur 2.
+    acc = float(accuracy_score(y_true, y_labels))
 
-    Pour chaque saison, calcule la proportion de vrais lauréats / finalistes
-    parmi les k joueurs les mieux classés par le modèle.
-
-    Note : dans notre contexte, y_true est binaire (1 seul lauréat par saison),
-    donc Precision@3 = 1/3 si le lauréat est dans le top-3, 0 sinon.
-
-    Returns
-    -------
-    float : Precision@K moyen sur toutes les saisons
-    """
-    y_true  = np.asarray(y_true)
-    y_prob  = np.asarray(y_prob)
-    groups  = np.asarray(groups)
-
-    precisions = []
-    seasons    = np.unique(groups)
-
-    for season in seasons:
-        mask      = groups == season
-        topk_idx  = np.argsort(y_prob[mask])[::-1][:k]
-        hits      = y_true[mask][topk_idx].sum()
-        precisions.append(hits / k)
-
-    return float(np.mean(precisions))
-
-
-def engine2_metrics(
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    groups: np.ndarray,
-    k: int = 3,
-) -> dict:
-    """
-    Calcule Top-1 Accuracy + Precision@K en une seule passe.
-
-    Returns
-    -------
-    {
-        "top1_accuracy":   float,   # ↑ maximiser
-        "precision_at_k":  float,   # ↑ maximiser  (k=3 par défaut)
-        "k":               int,
-    }
-    """
     return {
-        "top1_accuracy":  engine2_top1_accuracy(y_true, y_prob, groups),
-        "precision_at_k": engine2_precision_at_k(y_true, y_prob, groups, k),
-        "k": k,
+        "log_loss": ll,
+        "roc_auc":  auc,
+        "accuracy": acc,
     }
 
 
-def engine2_compare_models(results: dict[str, dict]) -> pd.DataFrame:
-    """
-    Compare plusieurs modèles Moteur 2 côte à côte.
+# ---------------------------------------------------------------------------
+# Engine 1 helpers — match outcome prediction
+# ---------------------------------------------------------------------------
 
-    Paramètre
-    ---------
-    results : dict
-        Clé = nom du modèle, valeur = dict retourné par engine2_metrics().
-        Ex: {
-            "LogisticRegression": {"top1_accuracy": 0.5, "precision_at_k": 0.33, "k": 3},
-            "DecisionTree":       {"top1_accuracy": 0.5, "precision_at_k": 0.50, "k": 3},
-            "RandomForest":       {"top1_accuracy": 1.0, "precision_at_k": 0.67, "k": 3},
-        }
+def engine1_evaluate_model(
+    model: Any,
+    X_test: Any,
+    y_test: Any,
+) -> dict[str, float]:
+    """Evaluate a single Engine-1 model and return its metrics.
+
+    Uses ``predict_proba`` when available, otherwise falls back to
+    ``predict`` (hard labels only).
+    """
+    if hasattr(model, "predict_proba"):
+        y_pred = model.predict_proba(X_test)
+    else:
+        y_pred = model.predict(X_test)
+    return compute_metrics(y_test, y_pred)
+
+
+def engine1_compare_models(
+    models: dict[str, Any],
+    X_test: Any,
+    y_test: Any,
+) -> pd.DataFrame:
+    """Compare multiple Engine-1 models on the same test split.
+
+    Parameters
+    ----------
+    models:
+        Mapping of ``{model_name: fitted_model}``.
+    X_test, y_test:
+        Held-out features and labels.
 
     Returns
     -------
-    pd.DataFrame trié par top1_accuracy décroissant.
+    pd.DataFrame
+        One row per model, columns: ``model``, ``log_loss``,
+        ``roc_auc``, ``accuracy``.  Sorted by ``roc_auc`` descending.
     """
-    df = pd.DataFrame(results).T
-    df.index.name = "model"
-    df = df[["top1_accuracy", "precision_at_k", "k"]].copy()
-    df["top1_accuracy"]  = df["top1_accuracy"].astype(float)
-    df["precision_at_k"] = df["precision_at_k"].astype(float)
-    df = df.sort_values("top1_accuracy", ascending=False)
-    df["rank"] = range(1, len(df) + 1)
-    return df
+    rows = []
+    for name, model in models.items():
+        metrics = engine1_evaluate_model(model, X_test, y_test)
+        rows.append({"model": name, **metrics})
+
+    df = pd.DataFrame(rows)
+    return df.sort_values("roc_auc", ascending=False).reset_index(drop=True)
 
 
-# ===========================================================================
-# Smoke test (python src/metrics.py)
-# ===========================================================================
-if __name__ == "__main__":
-    rng = np.random.default_rng(42)
+# ---------------------------------------------------------------------------
+# Engine 2 helpers — award prediction
+# ---------------------------------------------------------------------------
 
-    # --- Moteur 1 ---
-    y_true1 = rng.integers(0, 2, size=100)
-    y_prob1 = rng.uniform(0, 1, size=100)
-    m1 = engine1_metrics(y_true1, y_prob1)
-    print("=== Moteur 1 ===")
-    print(f"  Log Loss : {m1['log_loss']:.4f}  (baseline ≈ 0.693)")
-    print(f"  ROC-AUC  : {m1['roc_auc']:.4f}  (baseline = 0.5)\n")
+def _precision_at_k(y_true: np.ndarray, y_scores: np.ndarray, k: int = 3) -> float:
+    """Fraction of the top-k ranked players that are true award winners."""
+    top_k_idx = np.argsort(y_scores)[::-1][:k]
+    return float(np.sum(y_true[top_k_idx]) / k)
 
-    fake_results_1 = {
-        "LogisticRegression": {"log_loss": 0.61, "roc_auc": 0.72},
-        "RandomForest":       {"log_loss": 0.58, "roc_auc": 0.75},
-        "XGBoost":            {"log_loss": 0.55, "roc_auc": 0.78},
+
+def _top1_accuracy(y_true: np.ndarray, y_scores: np.ndarray) -> float:
+    """Whether the player ranked #1 by the model is a true winner."""
+    top1_idx = int(np.argmax(y_scores))
+    return float(y_true[top1_idx])
+
+
+def engine2_compute_metrics(
+    y_true: Any,
+    y_scores: Any,
+    k: int = 3,
+) -> dict[str, float]:
+    """Compute Engine-2 metrics for a single award target.
+
+    Parameters
+    ----------
+    y_true:
+        Binary ground-truth (1 = won the award this season).
+    y_scores:
+        Predicted probabilities (positive class).
+    k:
+        Number of top candidates for Precision@k.
+
+    Returns
+    -------
+    dict[str, float]
+        Keys: ``"top1_accuracy"``, ``"precision_at_k"``,
+        ``"log_loss"``, ``"roc_auc"``.
+    """
+    y_true   = np.asarray(y_true).ravel()
+    y_scores = np.asarray(y_scores).ravel()
+
+    # Guard: if only one class is present, AUC is undefined
+    n_pos = int(y_true.sum())
+    if n_pos == 0 or n_pos == len(y_true):
+        auc = float("nan")
+        ll  = float("nan")
+    else:
+        y_clipped = np.clip(y_scores, 1e-7, 1 - 1e-7)
+        auc       = float(roc_auc_score(y_true, y_clipped))
+        ll        = float(log_loss(y_true, y_clipped))
+
+    return {
+        "top1_accuracy":  _top1_accuracy(y_true, y_scores),
+        f"precision_at_{k}": _precision_at_k(y_true, y_scores, k),
+        "log_loss":       ll,
+        "roc_auc":        auc,
     }
-    print(engine1_compare_models(fake_results_1).to_string())
 
-    # --- Moteur 2 ---
-    print("\n=== Moteur 2 ===")
-    seasons  = np.array(["2022-23"] * 50 + ["2023-24"] * 50)
-    y_true2  = np.zeros(100, dtype=int)
-    y_true2[10] = 1   # lauréat saison 1
-    y_true2[73] = 1   # lauréat saison 2
-    y_prob2  = rng.uniform(0, 1, size=100)
-    y_prob2[10] = 0.99  # modèle parfait saison 1
-    m2 = engine2_metrics(y_true2, y_prob2, seasons)
-    print(f"  Top-1 Accuracy : {m2['top1_accuracy']:.2f}")
-    print(f"  Precision@3    : {m2['precision_at_k']:.2f}\n")
 
-    fake_results_2 = {
-        "LogisticRegression": {"top1_accuracy": 0.5,  "precision_at_k": 0.33, "k": 3},
-        "DecisionTree":       {"top1_accuracy": 0.5,  "precision_at_k": 0.50, "k": 3},
-        "RandomForest":       {"top1_accuracy": 1.0,  "precision_at_k": 0.67, "k": 3},
-    }
-    print(engine2_compare_models(fake_results_2).to_string())
+def engine2_evaluate_model(
+    model: Any,
+    X_test: Any,
+    y_test: Any,
+    k: int = 3,
+) -> dict[str, float]:
+    """Evaluate a single Engine-2 model on one award target."""
+    if hasattr(model, "predict_proba"):
+        y_scores = model.predict_proba(X_test)[:, 1]
+    else:
+        y_scores = model.decision_function(X_test)
+
+    return engine2_compute_metrics(y_test, y_scores, k=k)
+
+
+def engine2_compare_models(
+    models: dict[str, Any],
+    X_test: Any,
+    y_test: Any,
+    k: int = 3,
+) -> pd.DataFrame:
+    """Compare multiple Engine-2 models on the same award test split.
+
+    Parameters
+    ----------
+    models:
+        Mapping of ``{model_name: fitted_model}``.
+    X_test, y_test:
+        Held-out features and labels for one award target.
+    k:
+        Precision@k parameter.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per model, sorted by ``top1_accuracy`` then
+        ``precision_at_k`` descending.
+    """
+    rows = []
+    for name, model in models.items():
+        metrics = engine2_evaluate_model(model, X_test, y_test, k=k)
+        rows.append({"model": name, **metrics})
+
+    df = pd.DataFrame(rows)
+    sort_col = f"precision_at_{k}"
+    return df.sort_values(
+        ["top1_accuracy", sort_col], ascending=False
+    ).reset_index(drop=True)
