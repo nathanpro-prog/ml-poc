@@ -6,11 +6,14 @@ evaluate every configured model on the same test split.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -86,6 +89,17 @@ _ENGINE2_TARGETS = ["MVP", "DPOY", "ROY", "6MOY"]
 _TEST_SEASONS_ENGINE1 = 2   # last 2 seasons → ~20 % of 10
 _TEST_SEASONS_ENGINE2 = 2
 
+# ---------------------------------------------------------------------------
+# Engine 2 — eligibility rules
+# ---------------------------------------------------------------------------
+
+# Minimum games played for any award candidate (removes injury-shortened seasons)
+_GP_MIN = 65
+
+# Maximum minutes per game for 6MOY bench-player classification
+# All historical 6MOY winners average ≤ 32.2 min/game
+_BENCH_MIN_THRESHOLD = 33.0
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -139,6 +153,7 @@ def _temporal_split_engine2(
 def _add_opponent_features(df: pd.DataFrame) -> pd.DataFrame:
     """Join each team-game row with its opponent's rolling stats.
 
+
     For every game (identified by GAME_ID) there are exactly two rows: one
     for the home team (HOME=1) and one for the away team (HOME=0).  This
     function looks up the opponent's rolling stats and appends them as
@@ -160,6 +175,7 @@ def _add_opponent_features(df: pd.DataFrame) -> pd.DataFrame:
     lookup["HOME"] = 1 - lookup["HOME"]
 
     result = df.merge(lookup, on=["GAME_ID", "HOME"], how="left")
+    logger.debug("_add_opponent_features: added %d OPP/DIFF columns", len(_OPP_STATS) * 3)
 
     # Differential: team_stat − opponent_stat (positive → team is better)
     for stat in _OPP_STATS:
@@ -191,6 +207,7 @@ def _add_zscore_features(df: pd.DataFrame) -> pd.DataFrame:
     Requires ``SEASON_YEAR`` to be present in *df*.
     """
     base_stats = [f[2:] for f in _ENGINE2_ZSCORE_FEATURES]  # strip "Z_"
+    added = 0
     for stat in base_stats:
         if stat not in df.columns:
             continue
@@ -198,7 +215,43 @@ def _add_zscore_features(df: pd.DataFrame) -> pd.DataFrame:
         df[z_col] = df.groupby("SEASON_YEAR")[stat].transform(
             lambda x: (x - x.mean()) / (x.std(ddof=0) + 1e-8)
         )
+        added += 1
+    logger.debug("_add_zscore_features: added %d Z_* columns", added)
     return df
+
+
+def _apply_eligibility_filter(df: pd.DataFrame, target: str) -> pd.DataFrame:
+    """Apply award-specific eligibility rules to restrict the candidate pool.
+
+    Rules applied in order:
+    1. All awards: GP >= ``_GP_MIN`` (minimum games played).
+    2. ROY only: IS_ROOKIE == 1 (first season in dataset).
+       If the column is absent, derive it on-the-fly from PLAYER_ID.
+    3. 6MOY only: IS_BENCH == 1 (MIN_AVG < ``_BENCH_MIN_THRESHOLD``).
+       If the column is absent, derive it on-the-fly from MIN_AVG.
+    """
+    before = len(df)
+
+    # Rule 1: minimum games played
+    df = df[df["GP"] >= _GP_MIN].copy()
+
+    # Rule 2: ROY — rookie-year players only
+    if target == "ROY":
+        if "IS_ROOKIE" not in df.columns:
+            first_season = df.groupby("PLAYER_ID")["SEASON_YEAR"].transform("min")
+            df["IS_ROOKIE"] = (df["SEASON_YEAR"] == first_season).astype(np.int8)
+        df = df[df["IS_ROOKIE"] == 1].copy()
+
+    # Rule 3: 6MOY — bench players only
+    elif target == "6MOY":
+        if "IS_BENCH" not in df.columns:
+            df["IS_BENCH"] = (df["MIN_AVG"] < _BENCH_MIN_THRESHOLD).astype(np.int8)
+        df = df[df["IS_BENCH"] == 1].copy()
+
+    logger.info("Eligibility filter [%s]: %d → %d rows (GP>=%d%s)",
+                target, before, len(df), _GP_MIN,
+                ", IS_ROOKIE" if target == "ROY" else ", IS_BENCH" if target == "6MOY" else "")
+    return df.reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +280,7 @@ def load_dataset_split_engine1(
     """
     path = Path(data_path) if data_path else _MATCHES_PATH
     df   = pd.read_csv(path)
+    logger.info("E1 raw data: %s rows from %s", len(df), path.name)
 
     # Add opponent differential features (requires GAME_ID & HOME, dropped later)
     df = _add_opponent_features(df)
@@ -247,6 +301,8 @@ def load_dataset_split_engine1(
     y_train = train_df[_ENGINE1_TARGET].reset_index(drop=True)
     y_test  = test_df[_ENGINE1_TARGET].reset_index(drop=True)
 
+    logger.info("E1 split: train=%s test=%s features=%d win_rate_train=%.3f",
+                X_train.shape, X_test.shape, len(feature_cols), y_train.mean())
     return X_train, X_test, y_train, y_test
 
 
@@ -283,10 +339,14 @@ def load_dataset_split_engine2(
 
     path = Path(data_path) if data_path else _AWARDS_PATH
     df   = pd.read_csv(path)
+    logger.info("E2 raw data: %s rows from %s (target=%s)", len(df), path.name, target)
 
-    # Add season-normalised z-score features (computed on the full dataset
-    # so season means/stds include all players; split happens after)
+    # Add season-normalised z-score features BEFORE filtering so that z-scores
+    # reflect the full league distribution (not just the eligible pool).
     df = _add_zscore_features(df)
+
+    # Apply award-specific eligibility rules (GP minimum + ROY/6MOY restrictions)
+    df = _apply_eligibility_filter(df, target)
 
     # Keep base + z-score features that are present in the file
     all_features = _ENGINE2_FEATURES + _ENGINE2_ZSCORE_FEATURES
@@ -299,6 +359,8 @@ def load_dataset_split_engine2(
     y_train = train_df[target].reset_index(drop=True)
     y_test  = test_df[target].reset_index(drop=True)
 
+    logger.info("E2 split: train=%s test=%s features=%d positives_train=%d",
+                X_train.shape, X_test.shape, len(available_features), int(y_train.sum()))
     return X_train, X_test, y_train, y_test
 
 

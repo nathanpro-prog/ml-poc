@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +12,34 @@ import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
 
+logger = logging.getLogger(__name__)
+
+
+def _configure_logging() -> None:
+    """Set up file + console logging for the app session."""
+    log_dir = _PROJECT_ROOT / "logs"
+    log_dir.mkdir(exist_ok=True)
+    log_file = log_dir / "app.log"
+
+    root = logging.getLogger()
+    if root.handlers:
+        return  # already configured (e.g., re-run in Streamlit)
+
+    fmt = logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+                            datefmt="%H:%M:%S")
+
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+
+    root.setLevel(logging.DEBUG)
+    root.addHandler(fh)
+    root.addHandler(ch)
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _PLOTS_DIR    = _PROJECT_ROOT / "nba_data" / "plots"
 _RESULTS_FILE = _PROJECT_ROOT / "results" / "model_metrics.csv"
@@ -17,7 +47,8 @@ _MODELS_E1    = _PROJECT_ROOT / "models" / "engine1"
 _MODELS_E2    = _PROJECT_ROOT / "models" / "engine2"
 _AWARDS_CSV   = _PROJECT_ROOT / "nba_data" / "processed" / "awards_features_labeled.csv"
 
-_E1_FEATURES = [
+# Full 82-feature list matching model.feature_names_in_ (Engine 1)
+_E1_ALL_FEATURES = [
     "HOME",
     "ROLL5_PTS", "ROLL10_PTS",
     "ROLL5_FG_PCT", "ROLL10_FG_PCT",
@@ -31,6 +62,19 @@ _E1_FEATURES = [
     "ROLL5_TOV", "ROLL10_TOV",
     "ROLL5_PLUS_MINUS", "ROLL10_PLUS_MINUS",
     "DAYS_REST", "BACK_TO_BACK", "GAMES_LAST_7D", "WIN_STREAK",
+    # Opponent rolling stats (set to 0 when unknown)
+    "OPP_ROLL5_PTS", "OPP_ROLL5_FG_PCT", "OPP_ROLL5_FG3_PCT", "OPP_ROLL5_FT_PCT",
+    "OPP_ROLL5_OREB", "OPP_ROLL5_DREB", "OPP_ROLL5_AST", "OPP_ROLL5_STL",
+    "OPP_ROLL5_BLK", "OPP_ROLL5_TOV", "OPP_ROLL5_PLUS_MINUS",
+    # Differential features (set to 0 when opponent unknown)
+    "DIFF_PTS", "DIFF_FG_PCT", "DIFF_FG3_PCT", "DIFF_FT_PCT",
+    "DIFF_OREB", "DIFF_DREB", "DIFF_AST", "DIFF_STL", "DIFF_BLK", "DIFF_TOV", "DIFF_PLUS_MINUS",
+    # Opponent IS_VALID flags (0 = opponent data not available)
+    "OPP_ROLL5_PTS_IS_VALID", "OPP_ROLL5_FG_PCT_IS_VALID", "OPP_ROLL5_FG3_PCT_IS_VALID",
+    "OPP_ROLL5_FT_PCT_IS_VALID", "OPP_ROLL5_OREB_IS_VALID", "OPP_ROLL5_DREB_IS_VALID",
+    "OPP_ROLL5_AST_IS_VALID", "OPP_ROLL5_STL_IS_VALID", "OPP_ROLL5_BLK_IS_VALID",
+    "OPP_ROLL5_TOV_IS_VALID", "OPP_ROLL5_PLUS_MINUS_IS_VALID",
+    # Team rolling IS_VALID flags
     "ROLL5_PTS_IS_VALID", "ROLL10_PTS_IS_VALID",
     "ROLL5_FG_PCT_IS_VALID", "ROLL10_FG_PCT_IS_VALID",
     "ROLL5_FG3_PCT_IS_VALID", "ROLL10_FG3_PCT_IS_VALID",
@@ -44,7 +88,8 @@ _E1_FEATURES = [
     "ROLL5_PLUS_MINUS_IS_VALID", "ROLL10_PLUS_MINUS_IS_VALID",
 ]
 
-_E2_FEATURES = [
+# Full 36-feature list matching model.feature_names_in_ (Engine 2)
+_E2_ALL_FEATURES = [
     "PTS_AVG", "REB_AVG", "AST_AVG", "STL_AVG", "BLK_AVG",
     "FG_PCT", "FG3_PCT", "FT_PCT", "PLUS_MINUS_AVG",
     "FANTASY_AVG", "MIN_AVG",
@@ -53,6 +98,10 @@ _E2_FEATURES = [
     "RANK_BLK_AVG", "RANK_STL_AVG", "RANK_PLUS_MINUS_AVG",
     "TOP5_PCT_FLAG", "GP",
     "DD2_TOTAL", "TD3_TOTAL", "TOV_AVG",
+    # Season-normalized z-score features
+    "Z_PTS_AVG", "Z_REB_AVG", "Z_AST_AVG", "Z_STL_AVG", "Z_BLK_AVG",
+    "Z_PLUS_MINUS_AVG", "Z_FANTASY_AVG", "Z_DD2_RATE", "Z_CONSISTENCY",
+    "Z_MIN_AVG", "Z_TOV_AVG",
 ]
 
 _AWARDS = ["MVP", "DPOY", "ROY", "6MOY"]
@@ -190,8 +239,16 @@ def _load_e1_model(name: str):
     import joblib
     path = _MODELS_E1 / f"{name}.pkl"
     if not path.exists():
+        logger.warning("E1 model not found: %s", path)
         return None
-    return joblib.load(path)
+    try:
+        model = joblib.load(path)
+        logger.info("Loaded E1 model '%s' (%s)", name, type(model).__name__)
+        return model
+    except Exception as exc:
+        logger.error("Failed to load E1 model '%s': %s", name, exc)
+        st.warning(f"Could not load Engine 1 model '{name}': {exc}")
+        return None
 
 
 @st.cache_resource
@@ -199,37 +256,71 @@ def _load_e2_model(award: str, name: str):
     import joblib
     path = _MODELS_E2 / f"{award}_{name}.pkl"
     if not path.exists():
+        logger.warning("E2 model not found: %s", path)
         return None
-    return joblib.load(path)
+    try:
+        model = joblib.load(path)
+        logger.info("Loaded E2 model '%s_%s' (%s)", award, name, type(model).__name__)
+        return model
+    except Exception as exc:
+        logger.error("Failed to load E2 model '%s_%s': %s", award, name, exc)
+        st.warning(f"Could not load Engine 2 model '{award}_{name}': {exc}")
+        return None
 
 
 @st.cache_data
 def _load_e2_test_data():
     if not _AWARDS_CSV.exists():
+        logger.warning("Awards CSV not found: %s", _AWARDS_CSV)
         return None
-    df = pd.read_csv(_AWARDS_CSV)
-    seasons = sorted(df["SEASON_YEAR"].unique())
-    test_seasons = set(seasons[-2:])
-    return df[df["SEASON_YEAR"].isin(test_seasons)].reset_index(drop=True)
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(_PROJECT_ROOT / "src"))
+        from data import _add_zscore_features
+
+        df = pd.read_csv(_AWARDS_CSV)
+        logger.debug("Awards CSV loaded: %s rows", len(df))
+        # Compute per-season z-scores on the full dataset so each season is
+        # normalized relative to all its players (matches training-time behavior)
+        df = _add_zscore_features(df)
+        seasons = sorted(df["SEASON_YEAR"].unique())
+        test_seasons = set(seasons[-2:])
+        test_df = df[df["SEASON_YEAR"].isin(test_seasons)].reset_index(drop=True)
+        logger.info("E2 test data loaded: %d rows, %d features, test_seasons=%s",
+                    len(test_df), len(test_df.columns), sorted(test_seasons))
+        return test_df
+    except Exception as exc:
+        logger.error("Failed to load awards data: %s", exc)
+        st.warning(f"Could not load awards data: {exc}")
+        return None
 
 
 @st.cache_data
 def _evaluate_e1_models():
     """Run Engine 1 evaluation inline and return metrics DataFrame."""
-    import sys
-    sys.path.insert(0, str(_PROJECT_ROOT / "src"))
-    from data import load_dataset_split_engine1
-    from metrics import compute_metrics
+    logger.info("Evaluating E1 models inline...")
+    try:
+        import sys
+        sys.path.insert(0, str(_PROJECT_ROOT / "src"))
+        from data import load_dataset_split_engine1
+        from metrics import compute_metrics
+    except Exception as exc:
+        logger.error("Could not import evaluation modules: %s", exc)
+        st.warning(f"Could not import evaluation modules: {exc}")
+        return None
 
     try:
         _, X_test, _, y_test = load_dataset_split_engine1()
-    except Exception:
+        logger.info("E1 test set: %s, positive rate=%.3f", X_test.shape, y_test.mean())
+    except Exception as exc:
+        logger.error("Failed to load E1 test data: %s", exc)
         return None
 
     rows = []
     for name in ["logistic_regression", "random_forest", "xgboost"]:
         model = _load_e1_model(name)
         if model is None:
+            logger.warning("E1 model not available for evaluation: %s", name)
             continue
         try:
             if hasattr(model, "predict_proba"):
@@ -237,9 +328,58 @@ def _evaluate_e1_models():
             else:
                 y_pred = model.predict(X_test)
             m = compute_metrics(y_test, y_pred)
+            logger.info("E1 %s: auc=%.4f, logloss=%.4f, acc=%.4f",
+                        name, m.get("roc_auc", float("nan")),
+                        m.get("log_loss", float("nan")), m.get("accuracy", float("nan")))
             rows.append({"Model": name.replace("_", " ").title(), **m})
-        except Exception:
+        except Exception as exc:
+            logger.error("E1 evaluation failed for %s: %s", name, exc)
             continue
+
+    return pd.DataFrame(rows) if rows else None
+
+
+@st.cache_data
+def _evaluate_e2_models() -> pd.DataFrame | None:
+    """Evaluate all 4 × 3 Engine 2 models and return a flat metrics DataFrame."""
+    logger.info("Evaluating E2 models for all awards...")
+    try:
+        import sys
+        sys.path.insert(0, str(_PROJECT_ROOT / "src"))
+        from data import load_dataset_split_engine2
+        from metrics import engine2_compute_metrics
+    except Exception as exc:
+        logger.error("Could not import E2 evaluation modules: %s", exc)
+        return None
+
+    rows = []
+    for award in _AWARDS:
+        try:
+            _, X_test, _, y_test = load_dataset_split_engine2(target=award)
+        except Exception as exc:
+            logger.error("Failed to load E2 test data for %s: %s", award, exc)
+            continue
+
+        for mname in ["logistic_regression", "decision_tree", "random_forest"]:
+            model = _load_e2_model(award, mname)
+            if model is None:
+                continue
+            try:
+                scores = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") \
+                    else model.decision_function(X_test)
+                m = engine2_compute_metrics(y_test, scores, k=3)
+                logger.info("E2 %s/%s: top1=%d, p@3=%.3f, auc=%.4f",
+                            award, mname, int(m["top1_accuracy"]),
+                            m["precision_at_3"], m.get("roc_auc") or float("nan"))
+                rows.append({
+                    "Award": award,
+                    "Model": mname.replace("_", " ").title(),
+                    "Top-1 Acc": int(m["top1_accuracy"]),
+                    "Prec@3": round(m["precision_at_3"], 3),
+                    "ROC-AUC": round(m["roc_auc"], 4) if m.get("roc_auc") else float("nan"),
+                })
+            except Exception as exc:
+                logger.error("E2 eval failed %s/%s: %s", award, mname, exc)
 
     return pd.DataFrame(rows) if rows else None
 
@@ -247,6 +387,13 @@ def _evaluate_e1_models():
 # ── Entry point ────────────────────────────────────────────────────────────
 
 def build_app() -> None:
+    _configure_logging()
+    logger.info("=== NBA ML Dashboard starting ===")
+    logger.info("Project root: %s", _PROJECT_ROOT)
+    logger.info("Models E1 dir: %s (exists=%s)", _MODELS_E1, _MODELS_E1.exists())
+    logger.info("Models E2 dir: %s (exists=%s)", _MODELS_E2, _MODELS_E2.exists())
+    logger.info("Results file: %s (exists=%s)", _RESULTS_FILE, _RESULTS_FILE.exists())
+
     st.set_page_config(
         page_title="NBA ML Dashboard",
         page_icon="🏀",
@@ -273,15 +420,40 @@ def build_app() -> None:
     ])
 
     with tab_proj:
-        _render_project()
+        try:
+            logger.debug("Rendering Project tab")
+            _render_project()
+        except Exception as exc:
+            logger.error("Project tab render error: %s", exc, exc_info=True)
+            st.error(f"Project tab failed to render: {exc}")
     with tab_eda:
-        _render_eda()
+        try:
+            logger.debug("Rendering EDA tab")
+            _render_eda()
+        except Exception as exc:
+            logger.error("EDA tab render error: %s", exc, exc_info=True)
+            st.error(f"EDA tab failed to render: {exc}")
     with tab_models:
-        _render_model_comparison()
+        try:
+            logger.debug("Rendering Model Comparison tab")
+            _render_model_comparison()
+        except Exception as exc:
+            logger.error("Model Comparison tab render error: %s", exc, exc_info=True)
+            st.error(f"Model comparison tab failed to render: {exc}")
     with tab_e1:
-        _render_engine1_demo()
+        try:
+            logger.debug("Rendering Match Predictor tab")
+            _render_engine1_demo()
+        except Exception as exc:
+            logger.error("Match Predictor tab render error: %s", exc, exc_info=True)
+            st.error(f"Match predictor tab failed to render: {exc}")
     with tab_e2:
-        _render_engine2_demo()
+        try:
+            logger.debug("Rendering Awards Predictor tab")
+            _render_engine2_demo()
+        except Exception as exc:
+            logger.error("Awards Predictor tab render error: %s", exc, exc_info=True)
+            st.error(f"Awards predictor tab failed to render: {exc}")
 
 
 # ── Tab 1: Project ─────────────────────────────────────────────────────────
@@ -407,30 +579,49 @@ def _render_model_comparison() -> None:
 
     # KPI row
     if {"log_loss", "roc_auc", "accuracy"}.issubset(df.columns):
-        best = df.loc[df["roc_auc"].idxmax()]
+        # Safe idxmax: returns NaN when all values are NaN → fall back to first row
+        _roc_valid = df["roc_auc"].dropna()
+        best = df.loc[_roc_valid.idxmax()] if not _roc_valid.empty else df.iloc[0]
+
+        def _fmt(val: object, fmt: str, fallback: str = "N/A") -> str:
+            try:
+                return fmt.format(float(val)) if pd.notna(val) else fallback
+            except (TypeError, ValueError):
+                return fallback
+
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Best Model", str(best.get("Model", "—")))
-        c2.metric("Best ROC-AUC", f"{best['roc_auc']:.4f}", help="Higher is better")
-        c3.metric("Best Log Loss", f"{best['log_loss']:.4f}", help="Lower is better")
-        c4.metric("Best Accuracy", f"{best['accuracy']:.1%}")
+        c2.metric("Best ROC-AUC", _fmt(best["roc_auc"], "{:.4f}"), help="Higher is better")
+        c3.metric("Best Log Loss", _fmt(best["log_loss"], "{:.4f}"), help="Lower is better")
+        c4.metric("Best Accuracy", _fmt(best["accuracy"], "{:.1%}"))
 
         st.divider()
 
         col_chart, col_table = st.columns([3, 2], gap="large")
         with col_chart:
-            _plot_e1_comparison(df)
+            try:
+                _plot_e1_comparison(df)
+            except Exception as exc:
+                st.error(f"Chart rendering failed: {exc}")
         with col_table:
             st.markdown("**Full metrics table**")
             display = df[["Model", "roc_auc", "log_loss", "accuracy"]].copy()
-            display = display.sort_values("roc_auc", ascending=False)
-            st.dataframe(
-                display.style
-                    .format({"roc_auc": "{:.4f}", "log_loss": "{:.4f}", "accuracy": "{:.4f}"})
-                    .highlight_max(subset=["roc_auc", "accuracy"], color="#1D428A55")
-                    .highlight_min(subset=["log_loss"], color="#1D428A55"),
-                use_container_width=True,
-                hide_index=True,
+            display = display.sort_values("roc_auc", ascending=False, na_position="last")
+
+            # Only highlight columns that have at least one non-NaN value
+            _hl_max = [c for c in ["roc_auc", "accuracy"] if display[c].notna().any()]
+            _hl_min = [c for c in ["log_loss"]             if display[c].notna().any()]
+
+            styled = display.style.format(
+                {"roc_auc": "{:.4f}", "log_loss": "{:.4f}", "accuracy": "{:.4f}"},
+                na_rep="N/A",
             )
+            if _hl_max:
+                styled = styled.highlight_max(subset=_hl_max, color="#1D428A55")
+            if _hl_min:
+                styled = styled.highlight_min(subset=_hl_min, color="#1D428A55")
+
+            st.dataframe(styled, use_container_width=True, hide_index=True)
 
         st.divider()
         st.markdown("#### Feature Importance — Random Forest (Engine 1)")
@@ -440,22 +631,21 @@ def _render_model_comparison() -> None:
 @st.cache_data
 def _get_feature_importances() -> pd.DataFrame | None:
     """Load RF model and return top-30 feature importances."""
-    import joblib
     rf_path = _MODELS_E1 / "random_forest.pkl"
     if not rf_path.exists():
         return None
     try:
+        import joblib
         import sys as _sys
         _sys.path.insert(0, str(_PROJECT_ROOT / "src"))
         from data import load_dataset_split_engine1
         X_tr, _, _, _ = load_dataset_split_engine1()
         rf = joblib.load(rf_path)
-        # Handle Pipeline vs bare estimator
         estimator = rf.named_steps["clf"] if hasattr(rf, "named_steps") else rf
         if not hasattr(estimator, "feature_importances_"):
             return None
         imp = pd.DataFrame({
-            "feature": X_tr.columns,
+            "feature": list(X_tr.columns),
             "importance": estimator.feature_importances_,
         }).sort_values("importance", ascending=False).head(30)
         return imp
@@ -602,19 +792,31 @@ def _render_engine1_demo() -> None:
             "GAMES_LAST_7D": 3,
             "WIN_STREAK": win_streak,
         }
-        # All IS_VALID = 1 (simulating a mid-season team)
-        for feat in _E1_FEATURES:
-            if feat.endswith("_IS_VALID"):
-                row[feat] = 1
+        # Team IS_VALID = 1 (simulating a mid-season team with full rolling history)
+        for stat in ["PTS", "FG_PCT", "FG3_PCT", "FT_PCT", "OREB", "DREB",
+                     "AST", "STL", "BLK", "TOV", "PLUS_MINUS"]:
+            row[f"ROLL5_{stat}_IS_VALID"] = 1
+            row[f"ROLL10_{stat}_IS_VALID"] = 1
 
-        X = pd.DataFrame([row])[_E1_FEATURES]
+        # Opponent features — not available in demo; set to 0 (neutral/unknown)
+        for stat in ["PTS", "FG_PCT", "FG3_PCT", "FT_PCT", "OREB", "DREB",
+                     "AST", "STL", "BLK", "TOV", "PLUS_MINUS"]:
+            row[f"OPP_ROLL5_{stat}"] = 0.0
+            row[f"OPP_ROLL5_{stat}_IS_VALID"] = 0
+            row[f"DIFF_{stat}"] = 0.0
+
+        # Build DataFrame with exact 82-feature column order matching training
+        X = pd.DataFrame([row])[_E1_ALL_FEATURES]
 
         try:
             if hasattr(model, "predict_proba"):
                 prob = float(model.predict_proba(X)[0, 1])
             else:
                 prob = float(model.predict(X)[0])
+            logger.info("E1 demo prediction: model=%s, prob=%.4f, home=%s",
+                        model_name, prob, bool(home))
         except Exception as e:
+            logger.error("E1 demo prediction failed: %s", e, exc_info=True)
             st.error(f"Prediction failed: {e}")
             return
 
@@ -694,7 +896,10 @@ def _render_engine2_demo() -> None:
     with ctrl_col2:
         model_name = st.selectbox("Model", ["random_forest", "logistic_regression", "decision_tree"])
     with ctrl_col3:
-        season_filter = st.selectbox("Season", ["All test seasons"] + sorted(test_df["SEASON_YEAR"].unique().tolist(), reverse=True))
+        season_options = ["All test seasons"] + sorted(
+            [str(s) for s in test_df["SEASON_YEAR"].unique()], reverse=True
+        )
+        season_filter = st.selectbox("Season", season_options)
 
     model = _load_e2_model(award, model_name)
     if model is None:
@@ -703,17 +908,23 @@ def _render_engine2_demo() -> None:
 
     df = test_df.copy()
     if season_filter != "All test seasons":
-        df = df[df["SEASON_YEAR"] == season_filter]
+        df = df[df["SEASON_YEAR"].astype(str) == season_filter]
 
-    avail_feats = [f for f in _E2_FEATURES if f in df.columns]
-    X = df[avail_feats].fillna(0)
+    # Ensure all 36 training features are present (Z_* columns computed in _load_e2_test_data)
+    for feat in _E2_ALL_FEATURES:
+        if feat not in df.columns:
+            df[feat] = 0.0
+    X = df[_E2_ALL_FEATURES].fillna(0)
 
     try:
         if hasattr(model, "predict_proba"):
             scores = model.predict_proba(X)[:, 1]
         else:
             scores = model.decision_function(X)
+        logger.info("E2 demo prediction: award=%s, model=%s, candidates=%d, score_range=[%.4f, %.4f]",
+                    award, model_name, len(scores), scores.min(), scores.max())
     except Exception as e:
+        logger.error("E2 demo prediction failed: %s", e, exc_info=True)
         st.error(f"Prediction error: {e}")
         return
 
@@ -722,6 +933,13 @@ def _render_engine2_demo() -> None:
     df["true_winner"] = df[award].astype(int) if award in df.columns else 0
     df = df.sort_values("score", ascending=False).reset_index(drop=True)
     df["rank"] = df.index + 1
+
+    # Ensure display columns exist
+    if "PLAYER_NAME" not in df.columns:
+        df["PLAYER_NAME"] = "Unknown"
+    if "SEASON_YEAR" not in df.columns:
+        df["SEASON_YEAR"] = "Unknown"
+    df["SEASON_YEAR"] = df["SEASON_YEAR"].astype(str)
 
     # Summary metrics
     true_winner_rank = df.loc[df["true_winner"] == 1, "rank"].min() if df["true_winner"].sum() > 0 else None
@@ -762,7 +980,10 @@ def _render_engine2_demo() -> None:
         )
 
     with col_chart:
-        _plot_e2_scores(df.head(20), award)
+        try:
+            _plot_e2_scores(df.head(20), award)
+        except Exception as exc:
+            st.error(f"Score chart rendering failed: {exc}")
 
 
 def _plot_e2_scores(df: pd.DataFrame, award: str) -> None:

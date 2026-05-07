@@ -219,6 +219,13 @@ def train_engine1(use_optuna: bool = False) -> dict:
     (X_train, y_train), (X_test, y_test) = get_engine1_data()
     logger.info(f"Train : {X_train.shape} | Test : {X_test.shape}")
 
+    # Save feature names for prediction-time alignment
+    import json
+    feat_names_path = os.path.join(MODEL_DIR_E1, "feature_names.json")
+    os.makedirs(MODEL_DIR_E1, exist_ok=True)
+    with open(feat_names_path, "w") as _f:
+        json.dump(list(X_train.columns), _f)
+
     # Split val sur train pour Optuna (20% du train)
     val_size = int(len(X_train) * 0.2)
     X_val, y_val = X_train[-val_size:], y_train[-val_size:]
@@ -288,6 +295,14 @@ def train_engine2(use_optuna: bool = False) -> dict:
 
         (X_train, y_train), (X_test, y_test) = get_engine2_data(target=award)
         logger.info(f"  Train : {X_train.shape} | Positifs train : {y_train.sum()}")
+
+        # Save feature names for prediction-time alignment (first award iteration only)
+        if award == AWARDS[0]:
+            import json as _json
+            feat_names_path_e2 = os.path.join(MODEL_DIR_E2, "feature_names.json")
+            os.makedirs(MODEL_DIR_E2, exist_ok=True)
+            with open(feat_names_path_e2, "w") as _f:
+                _json.dump(list(X_train.columns), _f)
 
         val_size = max(1, int(len(X_train) * 0.2))
         X_val, y_val = X_train[-val_size:], y_train[-val_size:]

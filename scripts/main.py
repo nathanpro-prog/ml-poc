@@ -93,7 +93,12 @@ def _evaluate_models(X_test: Any, y_test: Any) -> list[dict[str, object]]:
                 f"Loaded object for model `{model_key}` does not expose a `predict` method."
             )
 
-        y_pred = model.predict(X_test)
+        # Use predict_proba when available so log_loss and roc_auc can be computed;
+        # fall back to hard-label predict only for models that lack probability output.
+        if hasattr(model, "predict_proba"):
+            y_pred = model.predict_proba(X_test)
+        else:
+            y_pred = model.predict(X_test)
         metrics = compute_metrics(y_test, y_pred)
 
         if not isinstance(metrics, dict) or not metrics:
