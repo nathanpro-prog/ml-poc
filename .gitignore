@@ -319,3 +319,5 @@ http-client.private.env.json
 logs/
 nba_data/processed
 nba_data/raw
+.claude/*
+mlruns/*
