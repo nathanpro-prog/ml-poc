@@ -193,16 +193,20 @@ def _build_engine2_model(name: str, params: dict):
 
 
 DEFAULT_PARAMS_E1 = {
-    "logistic_regression": {"C": 1.0},
-    "random_forest":       {"n_estimators": 200, "max_depth": 8, "min_samples_split": 5},
-    "xgboost":             {"learning_rate": 0.05, "n_estimators": 200,
-                            "max_depth": 4, "subsample": 0.8},
+    "logistic_regression": {"C": 0.5},
+    "random_forest":       {"n_estimators": 300, "max_depth": 10, "min_samples_split": 10,
+                            "min_samples_leaf": 4, "max_features": "sqrt"},
+    "xgboost":             {"learning_rate": 0.05, "n_estimators": 300,
+                            "max_depth": 5, "subsample": 0.8,
+                            "colsample_bytree": 0.8, "min_child_weight": 5,
+                            "reg_alpha": 0.1, "reg_lambda": 1.0},
 }
 
 DEFAULT_PARAMS_E2 = {
-    "logistic_regression": {"C": 1.0},
-    "decision_tree":       {"max_depth": 5, "min_samples_split": 5, "min_samples_leaf": 2},
-    "random_forest":       {"n_estimators": 200, "max_depth": 6},
+    "logistic_regression": {"C": 0.1},
+    "decision_tree":       {"max_depth": 4, "min_samples_split": 5, "min_samples_leaf": 2},
+    "random_forest":       {"n_estimators": 300, "max_depth": 8, "min_samples_leaf": 2,
+                            "max_features": "sqrt"},
 }
 
 
@@ -334,24 +338,25 @@ def train_engine2(use_optuna: bool = False) -> dict:
 
 
 def print_summary(results_e1: dict | None, results_e2: dict | None) -> None:
-    print("\n" + "═" * 60)
+    sep = "=" * 60
+    print("\n" + sep)
     if results_e1:
-        print("📊 MOTEUR 1 — Résultats comparatifs")
-        print(f"  {'Modèle':<25} {'Log Loss':>10} {'ROC-AUC':>10} {'Accuracy':>10}")
-        print("  " + "─" * 57)
+        print("ENGINE 1 -- Resultats comparatifs")
+        print(f"  {'Modele':<25} {'Log Loss':>10} {'ROC-AUC':>10} {'Accuracy':>10}")
+        print("  " + "-" * 57)
         for name, m in results_e1.items():
             print(f"  {name:<25} {m['log_loss']:>10.4f} {m['roc_auc']:>10.4f} {m['accuracy']:>10.4f}")
 
     if results_e2:
-        print("\n📊 MOTEUR 2 — Résultats comparatifs")
+        print("\nENGINE 2 -- Resultats comparatifs")
         for award in AWARDS:
             print(f"\n  [{award}]")
-            print(f"  {'Modèle':<25} {'Top-1 Acc':>10} {'Prec@3':>10} {'ROC-AUC':>10}")
-            print("  " + "─" * 57)
+            print(f"  {'Modele':<25} {'Top-1 Acc':>10} {'Prec@3':>10} {'ROC-AUC':>10}")
+            print("  " + "-" * 57)
             for name, m in results_e2[award].items():
                 auc_str = f"{m['roc_auc']:.4f}" if m['roc_auc'] is not None else "   N/A"
                 print(f"  {name:<25} {m['top1_accuracy']:>10} {m['precision_at_3']:>10.4f} {auc_str:>10}")
-    print("═" * 60 + "\n")
+    print("=" * 60 + "\n")
 
 
 def main():

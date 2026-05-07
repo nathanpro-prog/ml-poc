@@ -432,6 +432,78 @@ def _render_model_comparison() -> None:
                 hide_index=True,
             )
 
+        st.divider()
+        st.markdown("#### Feature Importance — Random Forest (Engine 1)")
+        _render_feature_importance()
+
+
+@st.cache_data
+def _get_feature_importances() -> pd.DataFrame | None:
+    """Load RF model and return top-30 feature importances."""
+    import joblib
+    rf_path = _MODELS_E1 / "random_forest.pkl"
+    if not rf_path.exists():
+        return None
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(_PROJECT_ROOT / "src"))
+        from data import load_dataset_split_engine1
+        X_tr, _, _, _ = load_dataset_split_engine1()
+        rf = joblib.load(rf_path)
+        # Handle Pipeline vs bare estimator
+        estimator = rf.named_steps["clf"] if hasattr(rf, "named_steps") else rf
+        if not hasattr(estimator, "feature_importances_"):
+            return None
+        imp = pd.DataFrame({
+            "feature": X_tr.columns,
+            "importance": estimator.feature_importances_,
+        }).sort_values("importance", ascending=False).head(30)
+        return imp
+    except Exception:
+        return None
+
+
+def _render_feature_importance() -> None:
+    imp = _get_feature_importances()
+    if imp is None:
+        st.info("Feature importances unavailable (model not found or not a tree-based model).")
+        return
+
+    # Group features by type for colour coding
+    def _feat_color(name: str) -> str:
+        if name.startswith("DIFF_"):    return "#C9A84C"
+        if name.startswith("OPP_"):     return "#5B9BD5"
+        if name.endswith("_IS_VALID"):  return "#6B7280"
+        if name in ("HOME", "BACK_TO_BACK", "WIN_STREAK"): return "#28A745"
+        return "#1D428A"
+
+    colors = [_feat_color(f) for f in imp["feature"]]
+    fig = go.Figure(go.Bar(
+        x=imp["importance"],
+        y=imp["feature"],
+        orientation="h",
+        marker_color=colors,
+        text=[f"{v:.4f}" for v in imp["importance"]],
+        textposition="outside",
+    ))
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#0E1117",
+        plot_bgcolor="#161B22",
+        font=dict(color="#FAFAFA"),
+        yaxis=dict(autorange="reversed"),
+        height=600,
+        margin=dict(t=20, b=30, l=10, r=60),
+        xaxis_title="Importance",
+    )
+    # Legend annotation
+    fig.add_annotation(
+        text="Gold=Differential  Blue=Opponent  Green=Momentum  Navy=Team rolling",
+        xref="paper", yref="paper", x=0.0, y=-0.06,
+        showarrow=False, font=dict(color="#8B949E", size=10),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
 
 def _plot_e1_comparison(df: pd.DataFrame) -> None:
     metrics = ["roc_auc", "log_loss", "accuracy"]

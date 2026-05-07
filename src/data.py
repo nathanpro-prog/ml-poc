@@ -36,6 +36,13 @@ _ENGINE1_DROP = [
 
 _ENGINE1_TARGET = "WL_BIN"
 
+# Rolling stats used to build opponent features and differentials
+_OPP_STATS = [
+    "ROLL5_PTS", "ROLL5_FG_PCT", "ROLL5_FG3_PCT", "ROLL5_FT_PCT",
+    "ROLL5_OREB", "ROLL5_DREB", "ROLL5_AST", "ROLL5_STL",
+    "ROLL5_BLK", "ROLL5_TOV", "ROLL5_PLUS_MINUS",
+]
+
 # Rolling prefixes — used to generate IS_VALID masks
 _ROLL_PREFIXES = [
     "ROLL5_PTS", "ROLL10_PTS",
@@ -64,6 +71,13 @@ _ENGINE2_FEATURES = [
     "RANK_BLK_AVG", "RANK_STL_AVG", "RANK_PLUS_MINUS_AVG",
     "TOP5_PCT_FLAG", "GP",
     "DD2_TOTAL", "TD3_TOTAL", "TOV_AVG",
+]
+
+# Season-normalized z-score versions (added by _add_zscore_features)
+_ENGINE2_ZSCORE_FEATURES = [
+    "Z_PTS_AVG", "Z_REB_AVG", "Z_AST_AVG", "Z_STL_AVG", "Z_BLK_AVG",
+    "Z_PLUS_MINUS_AVG", "Z_FANTASY_AVG", "Z_DD2_RATE", "Z_CONSISTENCY",
+    "Z_MIN_AVG", "Z_TOV_AVG",
 ]
 
 _ENGINE2_TARGETS = ["MVP", "DPOY", "ROY", "6MOY"]
@@ -119,6 +133,75 @@ def _temporal_split_engine2(
 
 
 # ---------------------------------------------------------------------------
+# Opponent features & z-score helpers
+# ---------------------------------------------------------------------------
+
+def _add_opponent_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Join each team-game row with its opponent's rolling stats.
+
+    For every game (identified by GAME_ID) there are exactly two rows: one
+    for the home team (HOME=1) and one for the away team (HOME=0).  This
+    function looks up the opponent's rolling stats and appends them as
+    ``OPP_ROLL5_*`` columns.  It also computes ``DIFF_*`` columns
+    (team stat minus opponent stat) which are strong predictors of outcome.
+
+    Requires ``GAME_ID`` and ``HOME`` to be present in *df* (they are
+    dropped later by ``_ENGINE1_DROP``).
+    """
+    # Build opponent lookup keyed by (GAME_ID, opponent_HOME)
+    lookup_cols = ["GAME_ID", "HOME"] + [s for s in _OPP_STATS if s in df.columns]
+    lookup = (
+        df[lookup_cols]
+        .copy()
+        .rename(columns={s: f"OPP_{s}" for s in _OPP_STATS if s in df.columns})
+    )
+    # Flip HOME so (GAME_ID, 1) → (GAME_ID, 0) and vice versa; now the key
+    # matches the *team's* (GAME_ID, HOME) and points to the opponent's stats.
+    lookup["HOME"] = 1 - lookup["HOME"]
+
+    result = df.merge(lookup, on=["GAME_ID", "HOME"], how="left")
+
+    # Differential: team_stat − opponent_stat (positive → team is better)
+    for stat in _OPP_STATS:
+        if stat not in df.columns:
+            continue
+        opp_col  = f"OPP_{stat}"
+        diff_col = "DIFF_" + stat[len("ROLL5_"):]   # e.g. DIFF_PTS
+        result[diff_col] = result[stat].fillna(0.0) - result[opp_col].fillna(0.0)
+
+    # IS_VALID masks for opponent features
+    for stat in _OPP_STATS:
+        opp_col   = f"OPP_{stat}"
+        valid_col = f"{opp_col}_IS_VALID"
+        if opp_col in result.columns:
+            result[valid_col] = result[opp_col].notna().astype(np.int8)
+            result[opp_col]   = result[opp_col].fillna(0.0)
+
+    return result
+
+
+def _add_zscore_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add per-season z-score normalised columns for key Engine-2 stats.
+
+    For each stat in ``_ENGINE2_ZSCORE_FEATURES``, computes how many
+    standard deviations above the season mean the player sits.  This makes
+    the features relative within a season rather than absolute across eras,
+    which is more informative for award prediction.
+
+    Requires ``SEASON_YEAR`` to be present in *df*.
+    """
+    base_stats = [f[2:] for f in _ENGINE2_ZSCORE_FEATURES]  # strip "Z_"
+    for stat in base_stats:
+        if stat not in df.columns:
+            continue
+        z_col = f"Z_{stat}"
+        df[z_col] = df.groupby("SEASON_YEAR")[stat].transform(
+            lambda x: (x - x.mean()) / (x.std(ddof=0) + 1e-8)
+        )
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Public API — Engine 1
 # ---------------------------------------------------------------------------
 
@@ -144,6 +227,9 @@ def load_dataset_split_engine1(
     """
     path = Path(data_path) if data_path else _MATCHES_PATH
     df   = pd.read_csv(path)
+
+    # Add opponent differential features (requires GAME_ID & HOME, dropped later)
+    df = _add_opponent_features(df)
 
     # Generate IS_VALID masks and fill NaNs before splitting
     df = _add_validity_masks(df)
@@ -198,8 +284,13 @@ def load_dataset_split_engine2(
     path = Path(data_path) if data_path else _AWARDS_PATH
     df   = pd.read_csv(path)
 
-    # Keep only feature columns that are present in the file
-    available_features = [c for c in _ENGINE2_FEATURES if c in df.columns]
+    # Add season-normalised z-score features (computed on the full dataset
+    # so season means/stds include all players; split happens after)
+    df = _add_zscore_features(df)
+
+    # Keep base + z-score features that are present in the file
+    all_features = _ENGINE2_FEATURES + _ENGINE2_ZSCORE_FEATURES
+    available_features = [c for c in all_features if c in df.columns]
 
     train_df, test_df = _temporal_split_engine2(df, n_test_seasons)
 
