@@ -317,4 +317,5 @@ http-client.private.env.json
 
 # Exclude logs directory
 logs/
-nba_data/*
+nba_data/processed
+nba_data/raw
