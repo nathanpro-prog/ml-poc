@@ -233,3 +233,38 @@ def load_dataset_split() -> tuple[Any, Any, Any, Any]:
         ``load_dataset_split_engine2(target=...)`` directly.
     """
     return load_dataset_split_engine1()
+
+
+# ---------------------------------------------------------------------------
+# train.py compatibility helpers
+# ---------------------------------------------------------------------------
+
+def get_engine1_data(
+    data_path: Path | str | None = None,
+    n_test_seasons: int = _TEST_SEASONS_ENGINE1,
+) -> tuple[tuple, tuple]:
+    """Return Engine-1 data as ``(X_train, y_train), (X_test, y_test)``.
+
+    Wrapper around ``load_dataset_split_engine1`` that reorders the return
+    value into the tuple-of-tuples format expected by ``src/train.py``.
+    """
+    X_train, X_test, y_train, y_test = load_dataset_split_engine1(
+        data_path=data_path, n_test_seasons=n_test_seasons
+    )
+    return (X_train, y_train), (X_test, y_test)
+
+
+def get_engine2_data(
+    target: str = "MVP",
+    data_path: Path | str | None = None,
+    n_test_seasons: int = _TEST_SEASONS_ENGINE2,
+) -> tuple[tuple, tuple]:
+    """Return Engine-2 data as ``(X_train, y_train), (X_test, y_test)``.
+
+    Wrapper around ``load_dataset_split_engine2`` that reorders the return
+    value into the tuple-of-tuples format expected by ``src/train.py``.
+    """
+    X_train, X_test, y_train, y_test = load_dataset_split_engine2(
+        target=target, data_path=data_path, n_test_seasons=n_test_seasons
+    )
+    return (X_train, y_train), (X_test, y_test)

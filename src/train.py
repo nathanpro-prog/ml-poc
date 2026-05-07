@@ -42,8 +42,8 @@ from sklearn.metrics import (
     accuracy_score, precision_score
 )
 
-from src.data import get_engine1_data, get_engine2_data
-from src.model_io import save_model
+from data import get_engine1_data, get_engine2_data
+from model_io import save_model
 
 warnings.filterwarnings("ignore")
 optuna.logging.set_verbosity(optuna.logging.WARNING)

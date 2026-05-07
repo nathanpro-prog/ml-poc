@@ -30,12 +30,22 @@ MODEL_METRICS_FILE = RESULTS_DIR / "model_metrics.csv"
 STREAMLIT_HOST = "localhost"
 STREAMLIT_PORT = 8501
 
-# Students must replace this example with their trained models.
-# Each entry must point to a serialized model saved as `.joblib`, `.pkl`, or `.pickle`.
+# Engine 1 — Match outcome prediction (WL_BIN)
+# Train with: python src/train.py --engine 1
 MODELS = {
-    "model_a": {
-        "name": "Model A",
-        "description": "A simple baseline model.",
-        "path": MODELS_DIR / "model_a.pkl",
+    "engine1_logistic_regression": {
+        "name": "Logistic Regression (Engine 1)",
+        "description": "Match outcome prediction — linear baseline with StandardScaler.",
+        "path": MODELS_DIR / "engine1" / "logistic_regression.pkl",
+    },
+    "engine1_random_forest": {
+        "name": "Random Forest (Engine 1)",
+        "description": "Match outcome prediction — ensemble with feature importance.",
+        "path": MODELS_DIR / "engine1" / "random_forest.pkl",
+    },
+    "engine1_xgboost": {
+        "name": "XGBoost (Engine 1)",
+        "description": "Match outcome prediction — gradient boosting, best expected performance.",
+        "path": MODELS_DIR / "engine1" / "xgboost.pkl",
     },
 }
